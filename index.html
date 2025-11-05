@@ -236,6 +236,32 @@
             gap: 10px;
             margin-top: 10px;
         }
+        
+        /* Announcement Styles */
+        .announcement-item {
+            background-color: var(--secondary-bg);
+            border: 1px solid var(--border-color);
+            border-left-width: 5px; /* Thicker border for color */
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+
+        .announcement-item h4 {
+            margin-top: 0;
+            color: #fff;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 5px;
+            margin-bottom: 10px;
+        }
+
+        .announcement-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            float: right;
+        }
+
 
         /* --- MODAL STYLES --- */
         .modal-backdrop {
@@ -284,6 +310,12 @@
         .btn-danger {
             background-color: darkred;
         }
+        
+        .edit-modal {
+             max-width: 600px;
+             text-align: left;
+             padding: 40px;
+        }
 
     </style>
 </head>
@@ -324,6 +356,7 @@
         const logAdminAction = async (db, currentUser, action, details) => {
             if (!currentUser) return;
             try {
+                // Admin must have 'create' permission on 'activityLogs'
                 await db.collection("activityLogs").add({
                     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
                     actorId: currentUser.uid,
@@ -347,11 +380,12 @@
             const checkIsAdmin = async (user) => {
                 if (!user) return false;
                 try {
+                    // Admin must have 'read' permission on 'admins'
                     const adminDoc = await db.collection("admins").doc(user.uid).get();
                     return adminDoc.exists;
                 } catch (error) {
                     // This error is expected for non-admins due to rules, so we suppress it.
-                    // console.error("Error checking admin status (check rules):", error);
+                    console.warn("Error checking admin status (check rules):", error);
                     return false;
                 }
             };
@@ -370,14 +404,12 @@
                 
                 // 2. Check Ban Status from Profiles
                 try {
-                    // We must fetch the profile to check ifBanned status
+                    // All authenticated users must have 'read' access to their profile for this check
                     const profileSnap = await db.collection("profiles").doc(user.uid).get();
                     const bannedStatus = profileSnap.exists && (profileSnap.data().isBanned || false);
                     setIsBanned(bannedStatus);
                 } catch (error) {
-                    console.error("Error fetching ban status (check rules):", error);
-                    // Critical for banned users: must ensure isBanned remains false if profile read fails
-                    // to prevent users being stuck in the appeal modal if rules are wrong.
+                    console.error("Error fetching ban status (check rules):", error); 
                     setIsBanned(false); 
                 }
             };
@@ -407,7 +439,7 @@
                     isBanned: false 
                 };
                 
-                // CRITICAL: New user MUST be able to create their profile (check rules)
+                // User must have 'create' permission on their own profile
                 await db.collection("profiles").doc(user.uid).set(defaultProfile);
                 
                 return userCredential;
@@ -417,16 +449,7 @@
                 const userCredential = await auth.signInWithEmailAndPassword(email, password);
                 const user = userCredential.user;
                 
-                // Check ban status right after auth, before proceeding.
-                const profileSnap = await db.collection("profiles").doc(user.uid).get();
-                const bannedStatus = profileSnap.exists && profileSnap.data().isBanned;
-
-                if (bannedStatus) {
-                    // Do NOT sign out here! The BanAppealModal needs the user to be signed in
-                    // to submit the appeal and check its status.
-                    // We rely on isBanned=true in AuthProvider value to redirect.
-                }
-                
+                // Fetch status to check ban state immediately
                 await fetchStatus(user);
 
                 return userCredential;
@@ -456,17 +479,17 @@
         // ---
 
         // 3.1. Custom Confirmation Modal Component
-        function ConfirmationModal({ title, children, confirmText, cancelText, onConfirm, onCancel, confirmClass }) {
+        function ConfirmationModal({ title, children, confirmText, cancelText, onConfirm, onCancel, confirmClass, customClass }) {
             return (
                 <div className="modal-backdrop">
-                    <div className="custom-modal">
+                    <div className={`custom-modal ${customClass || ''}`}>
                         <h4 className="modal-title">{title}</h4>
-                        <p>{children}</p>
+                        {/* FIX for validateDOMNesting Warning: Use a <div> instead of a <p> tag for containing children */}
+                        <div style={{ marginBottom: '20px' }}>{children}</div>
                         <div className="modal-buttons">
                             <button className="btn" onClick={onCancel} style={{ backgroundColor: 'gray' }}>
                                 <i className="fas fa-times"></i> {cancelText || 'Cancel'}
                             </button>
-                            {/* NOTE: Error in image_26f7e2.png: Warning: validateDOMNesting(...): <p> cannot appear as a descendant of <p>. This is because the 'children' prop here might contain a <p> tag, and this component wraps it in its own <p> tag. This structural warning will not break functionality. */}
                             <button className={`btn ${confirmClass || 'btn-confirm'}`} onClick={onConfirm}>
                                 <i className="fas fa-check"></i> {confirmText || 'Confirm'}
                             </button>
@@ -488,6 +511,7 @@
                 const checkAppealStatus = async () => {
                     if (!currentUser) return;
                     try {
+                        // Requires index: where('userId') + where('status') + orderBy('timestamp')
                         const snapshot = await db.collection("appeals")
                             .where("userId", "==", currentUser.uid)
                             .where("status", "==", "Pending")
@@ -499,7 +523,6 @@
                         }
                     } catch (error) {
                         console.error("Error checking appeal status (check rules):", error);
-                        // Suppress: Expected if banned user cannot read their own appeal due to rules
                     }
                 };
                 checkAppealStatus();
@@ -515,6 +538,7 @@
                 
                 setIsSubmitting(true);
                 try {
+                    // User must have 'create' permission on appeals for themselves
                     await db.collection("appeals").add({
                         userId: currentUser.uid,
                         userEmail: currentUser.email,
@@ -528,7 +552,6 @@
                     setAppealText('');
                 } catch (error) {
                     console.error("Error submitting appeal (check rules):", error);
-                    // CRITICAL: If this fails, the user is stuck. Check rules for 'appeals' create access.
                     setStatusMessage("Failed to submit appeal. Check your console and Firebase rules.");
                 } finally {
                     setIsSubmitting(false);
@@ -588,7 +611,7 @@
         function ProfileEditor({ profileData, profileId, onSave }) {
             const { db } = useAuth();
             const [profile, setProfile] = useState({
-                // Ensure proper default values (Fix for image_267063.png)
+                // Fixed Syntax Error: Used dot notation and nullish coalescing
                 name: (profileData && profileData.name) || '', 
                 imageUrl: (profileData && profileData.imageUrl) || '',
                 borderColor: (profileData && profileData.borderColor) || ''
@@ -614,7 +637,7 @@
                 setError('');
                 setSuccess('');
                 
-                // Ensure values are explicitly strings to prevent Firestore 'undefined' error (Fix for image_266fc7.png)
+                // Fixed Invalid Data Error: Ensure fields are never undefined/null when saving.
                 const dataToSave = {
                     name: String(profile.name || ''),
                     imageUrl: String(profile.imageUrl || ''),
@@ -622,6 +645,7 @@
                 };
 
                 try {
+                    // User must have 'update' permission on their own profile
                     await db.collection("profiles").doc(profileId).update(dataToSave);
                     setSuccess("Profile saved successfully!");
                     if (onSave) onSave(dataToSave);
@@ -669,7 +693,9 @@
             const fetchAllUsers = async () => {
                 setLoading(true);
                 try {
+                    // Admin must have 'read' permission on 'profiles'
                     const profileSnapshot = await db.collection("profiles").get();
+                    // Admin must have 'read' permission on 'admins'
                     const adminSnapshot = await db.collection("admins").get();
                     
                     const adminUids = new Set(adminSnapshot.docs.map(doc => doc.id));
@@ -729,9 +755,11 @@
                         const adminDocRef = db.collection("admins").doc(targetUser.id);
                         
                         if (newStatus) {
+                            // Admin must have 'create' permission on 'admins'
                             await adminDocRef.set({ grantedBy: currentUser.uid, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
                             alertMessage = `${targetUser.name} has been Promoted to Admin.`;
                         } else {
+                            // Admin must have 'delete' permission on 'admins'
                             await adminDocRef.delete();
                             alertMessage = `${targetUser.name} has been Demoted.`;
                         }
@@ -746,7 +774,7 @@
                         const newBanStatus = action === 'ban';
                         logActionType = newBanStatus ? 'USER_BANNED' : 'USER_UNBANNED';
                         
-                        // CRITICAL: Admin update to 'isBanned' must succeed (check rules)
+                        // Admin must have 'update' permission on 'profiles' for any user
                         await db.collection("profiles").doc(targetUser.id).update({ 
                             isBanned: newBanStatus,
                             bannedBy: newBanStatus ? currentUser.email : null,
@@ -762,6 +790,7 @@
                         );
                     }
                     
+                    // Admin must have 'create' permission on 'activityLogs'
                     logAdminAction(logActionType, { targetUserId: targetUser.id, targetUserName: targetUser.name });
                     alert(alertMessage);
                     
@@ -907,7 +936,7 @@
                             )}
                         </div>
                         <div style={{ flex: 1, borderLeft: '1px solid var(--border-color)', paddingLeft: '20px' }}>
-                            {/* FIX: Removed surrounding <> fragment that caused Babel/JSX errors (image_26615b.png) */}
+                            {/* Fixed Babel/JSX error by removing unnecessary React fragment wrapper */}
                             {selectedUser ? (
                                 <React.Fragment> 
                                     <h4>Editing: {selectedUser.name || 'N/A'}</h4>
@@ -931,6 +960,7 @@
             const { db, currentUser, logAdminAction } = useAuth();
             const [title, setTitle] = useState('');
             const [content, setContent] = useState('');
+            const [color, setColor] = useState('#00bfff'); // Default info blue
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
 
@@ -947,17 +977,20 @@
                     const newAnnouncement = {
                         title: title,
                         content: content,
+                        color: color, 
                         postedBy: currentUser.email,
                         postedById: currentUser.uid,
                         timestamp: firebase.firestore.FieldValue.serverTimestamp()
                     };
 
+                    // Admin must have 'create' permission on 'announcements'
                     await db.collection("announcements").add(newAnnouncement);
                     
                     logAdminAction('ANNOUNCEMENT_POSTED', { title: title, poster: currentUser.email });
                     setStatus('Announcement posted successfully!');
                     setTitle('');
                     setContent('');
+                    setColor('#00bfff');
                     onPost();
                 } catch (error) {
                     console.error("Error posting announcement (check rules):", error);
@@ -994,6 +1027,16 @@
                                 required 
                             />
                         </div>
+                        <div className="form-group" style={{ maxWidth: '200px' }}>
+                            <label>Border Color (Hex/Name)</label>
+                            <input 
+                                type="text" 
+                                className="form-input" 
+                                value={color} 
+                                onChange={(e) => setColor(e.target.value)} 
+                                placeholder="#00bfff"
+                            />
+                        </div>
                         <button type="submit" className="btn" disabled={loading}>
                             {loading ? (
                                 <i className="fas fa-spinner fa-spin"></i>
@@ -1006,12 +1049,118 @@
                 </div>
             );
         }
+        
+        // 3.6. Admin Announcement Editor Modal
+        function AnnouncementEditorModal({ announcement, onSave, onCancel }) {
+            const { db, currentUser, logAdminAction } = useAuth();
+            const [title, setTitle] = useState(announcement.title);
+            const [content, setContent] = useState(announcement.content);
+            const [color, setColor] = useState(announcement.color || '#00bfff');
+            const [status, setStatus] = useState('');
+            const [loading, setLoading] = useState(false);
+            
+            const handleUpdate = async (e) => {
+                e.preventDefault();
+                setStatus('');
+                if (!title || !content) {
+                    setStatus('Error: Title and content are required.');
+                    return;
+                }
+                
+                setLoading(true);
+                try {
+                    const updatedAnnouncement = {
+                        title: title,
+                        content: content,
+                        color: color,
+                        updatedBy: currentUser.email,
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    };
 
-        // 3.6. Announcements Component
+                    // Admin must have 'update' permission on 'announcements'
+                    await db.collection("announcements").doc(announcement.id).update(updatedAnnouncement);
+                    
+                    logAdminAction('ANNOUNCEMENT_UPDATED', { id: announcement.id, title: title, updater: currentUser.email });
+                    setStatus('Announcement updated successfully!');
+                    onSave(); // Close the modal and refresh the list
+                } catch (error) {
+                    console.error("Error updating announcement (check rules):", error);
+                    setStatus('Error updating announcement. Check Firebase rules: ' + error.message);
+                    logAdminAction('ANNOUNCEMENT_UPDATE_FAILED', { id: announcement.id, error: error.message });
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                 <div className="modal-backdrop">
+                    <div className="custom-modal edit-modal">
+                        <h4 className="modal-title">
+                            <i className="fas fa-edit"></i> Edit Announcement
+                        </h4>
+                        <form onSubmit={handleUpdate}>
+                            {status && <p style={{ color: status.includes('Error') ? 'var(--accent-red)' : 'lightgreen' }}>{status}</p>}
+                            
+                            <div className="form-group">
+                                <label>Title</label>
+                                <input 
+                                    type="text" 
+                                    className="form-input" 
+                                    value={title} 
+                                    onChange={(e) => setTitle(e.target.value)} 
+                                    required 
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Content</label>
+                                <textarea 
+                                    className="form-input" 
+                                    value={content} 
+                                    onChange={(e) => setContent(e.target.value)} 
+                                    rows="4" 
+                                    required 
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Border Color (Hex/Name)</label>
+                                <input 
+                                    type="text" 
+                                    className="form-input" 
+                                    value={color} 
+                                    onChange={(e) => setColor(e.target.value)} 
+                                    placeholder="#00bfff"
+                                />
+                            </div>
+                            
+                            <div className="modal-buttons">
+                                <button className="btn" onClick={onCancel} style={{ backgroundColor: 'gray' }} type="button">
+                                    <i className="fas fa-times"></i> Cancel
+                                </button>
+                                <button type="submit" className="btn btn-confirm" disabled={loading}>
+                                    {loading ? (
+                                        <i className="fas fa-spinner fa-spin"></i>
+                                    ) : (
+                                        <i className="fas fa-save"></i>
+                                    )}
+                                    Save Changes
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+        
+
+        // 3.7. Announcements Component
         function Announcements() {
-            const { db, isAdmin } = useAuth();
+            const { db, isAdmin, logAdminAction } = useAuth();
             const [announcements, setAnnouncements] = useState([]);
             const [loading, setLoading] = useState(true);
+            
+            // Edit/Delete state
+            const [editingAnnouncement, setEditingAnnouncement] = useState(null);
+            const [deletingAnnouncement, setDeletingAnnouncement] = useState(null);
 
             const formatTimestamp = (timestamp) => {
                 if (!timestamp) return 'N/A';
@@ -1022,7 +1171,7 @@
             const fetchAnnouncements = async () => {
                 setLoading(true);
                 try {
-                    // CRITICAL: Non-admin users must be able to read this (check rules)
+                    // All authenticated users must have 'read' permission on 'announcements'
                     const snapshot = await db.collection("announcements")
                         .orderBy("timestamp", "desc")
                         .limit(10)
@@ -1041,6 +1190,29 @@
             useEffect(() => {
                 fetchAnnouncements();
             }, []);
+            
+            const handleDelete = async () => {
+                if (!deletingAnnouncement) return;
+                
+                const { id, title } = deletingAnnouncement;
+                setDeletingAnnouncement(null);
+
+                try {
+                    // Admin must have 'delete' permission on 'announcements'
+                    await db.collection("announcements").doc(id).delete();
+                    logAdminAction('ANNOUNCEMENT_DELETED', { id: id, title: title });
+                    fetchAnnouncements(); // Refresh list after deletion
+                } catch (error) {
+                    console.error("Error deleting announcement (check rules):", error);
+                    logAdminAction('ANNOUNCEMENT_DELETE_FAILED', { id: id, error: error.message });
+                    alert(`Failed to delete announcement: ${error.message}`);
+                }
+            };
+            
+            const handleEditSave = () => {
+                setEditingAnnouncement(null);
+                fetchAnnouncements(); // Refresh list after edit
+            };
 
             return (
                 <div>
@@ -1050,13 +1222,60 @@
                     {isAdmin && <AnnouncementCreator onPost={fetchAnnouncements} />}
 
                     <h4><i className="fas fa-list-alt"></i> Latest Announcements</h4>
+                    
+                    {/* Confirmation Modal for Deletion */}
+                    {deletingAnnouncement && (
+                        <ConfirmationModal
+                            title="Confirm Announcement Deletion"
+                            confirmText="DELETE PERMANENTLY"
+                            cancelText="CANCEL"
+                            onConfirm={handleDelete}
+                            onCancel={() => setDeletingAnnouncement(null)}
+                            confirmClass="btn-danger"
+                        >
+                            <p>Are you sure you want to delete the announcement: **{deletingAnnouncement.title}**?</p>
+                            <p style={{color: 'red'}}>This cannot be undone.</p>
+                        </ConfirmationModal>
+                    )}
+                    
+                    {/* Editor Modal */}
+                    {editingAnnouncement && (
+                        <AnnouncementEditorModal
+                            announcement={editingAnnouncement}
+                            onSave={handleEditSave}
+                            onCancel={() => setEditingAnnouncement(null)}
+                        />
+                    )}
+
 
                     {loading ? (
                         <p>Loading announcements...</p>
                     ) : (
                         <React.Fragment>
                             {announcements.map(announcement => (
-                                <div key={announcement.id} className="announcement-item">
+                                <div 
+                                    key={announcement.id} 
+                                    className="announcement-item"
+                                    style={{ borderColor: announcement.color || 'var(--info-blue)' }} // Apply custom color
+                                >
+                                    {isAdmin && (
+                                        <div className="announcement-actions">
+                                            <button 
+                                                className="btn" 
+                                                style={{ width: 'auto', padding: '5px 10px', fontSize: '0.8rem', backgroundColor: 'darkorange' }}
+                                                onClick={() => setEditingAnnouncement(announcement)}
+                                            >
+                                                <i className="fas fa-edit"></i> Edit
+                                            </button>
+                                            <button 
+                                                className="btn" 
+                                                style={{ width: 'auto', padding: '5px 10px', fontSize: '0.8rem', backgroundColor: 'darkred' }}
+                                                onClick={() => setDeletingAnnouncement(announcement)}
+                                            >
+                                                <i className="fas fa-trash-alt"></i> Delete
+                                            </button>
+                                        </div>
+                                    )}
                                     <h4>{announcement.title}</h4>
                                     <p>{announcement.content}</p>
                                     <p style={{ float: 'right', fontSize: '0.75rem', color: '#888', marginTop: '10px' }}>
@@ -1072,7 +1291,7 @@
             );
         }
 
-        // 3.7. Dashboard Home View (User's Profile and Editor) - MUST be defined before DashboardPage
+        // 3.8. Dashboard Home View (User's Profile and Editor)
         function DashboardHome() {
             const { currentUser, db } = useAuth();
             const [profile, setProfile] = useState(null);
@@ -1082,12 +1301,11 @@
                 const fetchProfile = async () => {
                     if (!currentUser) return;
                     try {
-                        // CRITICAL: Regular user MUST be able to read their own profile (check rules)
+                        // Regular user must have 'read' permission on their own profile
                         const profileSnap = await db.collection("profiles").doc(currentUser.uid).get();
                         setProfile(profileSnap.exists ? profileSnap.data() : null);
                     } catch (e) {
                          console.error("Error fetching user profile (check rules):", e);
-                        // Suppress: Expected if the user is banned and rules only allow them to read 'isBanned' field (which we checked in AuthProvider)
                     }
                     setLoading(false);
                 };
@@ -1101,7 +1319,7 @@
                     <h3><i className="fas fa-user-circle"></i> My Profile</h3>
                     <div className="profile-info" style={{ display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '20px' }}>
                         <img 
-                            // FIX: Revert optional chaining back to safe check (Fix for image_260e2b.png)
+                            // Fixed Syntax Error: Use nullish coalescing or logical AND for optional chaining
                             src={(profile && profile.imageUrl) || "https://via.placeholder.com/60"} 
                             alt="Profile" 
                             className="profile-img" 
@@ -1131,7 +1349,7 @@
             );
         }
         
-        // 3.8. Admin Data Reset/Management Tool
+        // 3.9. Admin Data Reset/Management Tool
         function DataManagement() {
             const { db, currentUser, logAdminAction } = useAuth();
             const [message, setMessage] = useState('');
@@ -1146,13 +1364,13 @@
                 const data = {};
                 for (const name of collections) {
                     try {
+                        // Admin must have 'read' permission on all these collections
                         const snapshot = await db.collection(name).get();
                         const count = snapshot.docs.length;
                         const estimatedSize = (count * 1.5).toFixed(2) + ' KB'; 
                         data[name] = { count, estimatedSize };
                     } catch (error) {
                         data[name] = { count: 'Error', estimatedSize: 'N/A' };
-                        // Suppress: Expected for non-admin on admin-only collections
                     }
                 }
                 setCollectionData(data);
@@ -1160,7 +1378,7 @@
 
             const fetchLogs = async () => {
                 try {
-                    // CRITICAL: Only admin can read activityLogs (check rules)
+                    // Admin must have 'read' permission on 'activityLogs'
                     const snapshot = await db.collection("activityLogs")
                         .orderBy("timestamp", "desc")
                         .limit(20)
@@ -1199,9 +1417,11 @@
                     }
 
                     snapshot.docs.forEach(doc => {
+                        // Prevents deleting the current admin's record
                         if (collectionName === 'admins' && doc.id === currentUser.uid) {
-                            // Skip deleting the currently logged-in admin's record
+                            // Skip
                         } else {
+                            // Admin needs appropriate delete permission on the collection
                             batch.delete(doc.ref);
                             deletedCount++;
                         }
@@ -1242,7 +1462,7 @@
                             confirmText="WIPE DATA"
                             cancelText="CANCEL"
                             onConfirm={handleClearCollection}
-                            onCancel={() => setShowCleanupModal(false)} // Fix: Use setShowCleanupModal
+                            onCancel={() => setShowCleanupModal(false)} 
                             confirmClass="btn-danger"
                         >
                             <p style={{color: 'red', fontWeight: 'bold'}}>
@@ -1277,12 +1497,12 @@
                                     <tr key={name}>
                                         <td style={{ padding: '8px' }}>{name}</td>
                                         <td style={{ padding: '8px', textAlign: 'right' }}>
-                                            {/* Corrected Conditional Rendering Syntax (Fix for image_26dc83.png) */}
-                                            {(collectionData[name] && collectionData[name].count) || 0}
+                                            {/* Fixed Syntax Error: Ensure nullish coalescing is correct */}
+                                            {collectionData[name] ? (collectionData[name].count || 0) : 0}
                                         </td>
                                         <td style={{ padding: '8px', textAlign: 'right' }}>
-                                            {/* Corrected Conditional Rendering Syntax (Fix for image_26dc83.png) */}
-                                            {(collectionData[name] && collectionData[name].estimatedSize) || '0 KB'}
+                                            {/* Fixed Syntax Error: Ensure nullish coalescing is correct */}
+                                            {collectionData[name] ? (collectionData[name].estimatedSize || '0 KB') : '0 KB'}
                                         </td>
                                     </tr>
                                 ))}
@@ -1373,7 +1593,7 @@
             );
         }
 
-        // 3.9. APPEAL REVIEW COMPONENT (ADMIN)
+        // 3.10. APPEAL REVIEW COMPONENT (ADMIN)
         function AppealReview() {
             const { db, currentUser, logAdminAction, fetchStatus } = useAuth();
             const [appeals, setAppeals] = useState([]);
@@ -1387,7 +1607,9 @@
             const fetchPendingAppeals = async () => {
                 setLoading(true);
                 try {
-                    // CRITICAL: Only admin can read 'appeals' (check rules)
+                    // Admin must have 'read' permission on 'appeals'.
+                    // NOTE: This query requires a composite index on 'status' (Asc) and 'timestamp' (Asc)
+                    // You MUST create this index in the Firebase Console (See console error)
                     const snapshot = await db.collection("appeals")
                         .where("status", "==", "Pending")
                         .orderBy("timestamp", "asc")
@@ -1395,9 +1617,11 @@
                     
                     const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     setAppeals(list);
+                    setMessage('');
                 } catch (error) {
                     console.error("Error fetching appeals (check rules):", error);
-                    setMessage("Failed to fetch appeals. Check Firebase rules.");
+                    // The error is either permission OR missing index
+                    setMessage("Failed to fetch appeals. Check Firebase rules AND ensure the composite index on 'appeals' (status, timestamp) is created.");
                     setAppeals([]);
                 } finally {
                     setLoading(false);
@@ -1424,7 +1648,7 @@
                 setMessage(`Processing decision for ${appeal.userEmail}...`);
                 
                 try {
-                    // CRITICAL: Admin update to 'appeals' status (check rules)
+                    // Admin must have 'update' permission on 'appeals'
                     await db.collection("appeals").doc(appeal.id).update({
                         status: decision,
                         reviewerId: currentUser.uid,
@@ -1434,7 +1658,7 @@
                     let logDetails = { targetUserId: appeal.userId, decision: decision };
                     
                     if (decision === 'unban_member' || decision === 'unban_admin') {
-                        // CRITICAL: Admin update to 'isBanned' must succeed (check rules)
+                        // Admin must have 'update' permission on 'profiles'
                         await db.collection("profiles").doc(appeal.userId).update({
                             isBanned: false
                         });
@@ -1442,11 +1666,12 @@
                         const isAdminRole = decision === 'unban_admin';
                         const adminDocRef = db.collection("admins").doc(appeal.userId);
                         
-                        // CRITICAL: Admin access to 'admins' collection (check rules)
                         if (isAdminRole) {
+                            // Admin must have 'create' permission on 'admins'
                             await adminDocRef.set({ grantedByAppeal: currentUser.uid, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
                             logAdminAction('APPEAL_UNBAN_PROMOTE', logDetails);
                         } else {
+                            // Admin must have 'delete' permission on 'admins'
                             await adminDocRef.delete(); 
                             logAdminAction('APPEAL_UNBAN_MEMBER', logDetails);
                         }
@@ -1575,7 +1800,7 @@
             );
         }
 
-        // 3.10. Navigation Bar
+        // 3.11. Navigation Bar
         function Navbar({ currentView, setView }) {
             const { isAdmin, logout } = useAuth();
             
@@ -1612,7 +1837,7 @@
             );
         }
 
-        // 3.11. MAIN DASHBOARD COMPONENT (Router) - MUST be defined before App
+        // 3.12. MAIN DASHBOARD COMPONENT (Router)
         function DashboardPage() {
             const [view, setView] = useState('home');
             const { isAdmin } = useAuth();
@@ -1672,19 +1897,21 @@
             return (
                 <React.Fragment>
                     <h3><i className="fas fa-sign-in-alt"></i> Login</h3>
-                    <form onSubmit={handleSubmit}>
-                        {error && <div className="error-message">{error}</div>}
-                        <div className="form-group">
-                            <label>Email</label>
-                            <input type="email" className="form-input" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                        </div>
-                        <div className="form-group">
-                            <label>Password</label>
-                            <input type="password" className="form-input" value={password} onChange={(e) => setPassword(e.target.value)} required />
-                        </div>
-                        <button type="submit" className="btn">Log In</button>
-                    </form>
-                    <button className="btn-link" onClick={() => setPage('signup')}>Need an account? Sign Up</button>
+                    <div className="panel auth-panel">
+                        <form onSubmit={handleSubmit}>
+                            {error && <div className="error-message">{error}</div>}
+                            <div className="form-group">
+                                <label>Email</label>
+                                <input type="email" className="form-input" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                            </div>
+                            <div className="form-group">
+                                <label>Password</label>
+                                <input type="password" className="form-input" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                            </div>
+                            <button type="submit" className="btn">Log In</button>
+                        </form>
+                        <button className="btn-link" onClick={() => setPage('signup')}>Need an account? Sign Up</button>
+                    </div>
                 </React.Fragment>
             );
         }
@@ -1708,25 +1935,27 @@
             return (
                 <React.Fragment>
                     <h3><i className="fas fa-user-plus"></i> Sign Up</h3>
-                    <form onSubmit={handleSubmit}>
-                        {error && <div className="error-message">{error}</div>}
-                        <div className="form-group">
-                            <label>Email</label>
-                            <input type="email" className="form-input" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                        </div>
-                        <div className="form-group">
-                            <label>Password</label>
-                            <input type="password" className="form-input" value={password} onChange={(e) => setPassword(e.target.value)} required />
-                        </div>
-                        <button type="submit" className="btn">Register</button>
-                    </form>
-                    <button className="btn-link" onClick={() => setPage('login')}>Already have an account? Log In</button>
+                    <div className="panel auth-panel">
+                        <form onSubmit={handleSubmit}>
+                            {error && <div className="error-message">{error}</div>}
+                            <div className="form-group">
+                                <label>Email</label>
+                                <input type="email" className="form-input" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                            </div>
+                            <div className="form-group">
+                                <label>Password</label>
+                                <input type="password" className="form-input" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                            </div>
+                            <button type="submit" className="btn">Register</button>
+                        </form>
+                        <button className="btn-link" onClick={() => setPage('login')}>Already have an account? Log In</button>
+                    </div>
                 </React.Fragment>
             );
         }
 
         // ---
-        // 5. MAIN APP COMPONENT (Root Router) - MUST be defined last
+        // 5. MAIN APP COMPONENT (Root Router)
         // ---
         function App() {
             const { currentUser, isBanned } = useAuth();
@@ -1742,11 +1971,11 @@
 
             switch (page) {
                 case 'login':
-                    return <div className="auth-panel"><LoginPage setPage={setPage} /></div>;
+                    return <LoginPage setPage={setPage} />;
                 case 'signup':
-                    return <div className="auth-panel"><SignupPage setPage={setPage} /></div>;
+                    return <SignupPage setPage={setPage} />;
                 default:
-                    return <div className="auth-panel"><LoginPage setPage={setPage} /></div>;
+                    return <LoginPage setPage={setPage} />;
             }
         }
 
